@@ -93,6 +93,7 @@ export class Camera extends BasicSerializableObject {
         this.downPreHandler = /** @type {TypedSignal<[Vector, enumMouseButton]>} */ (new Signal());
         this.movePreHandler = /** @type {TypedSignal<[Vector]>} */ (new Signal());
         // this.pinchPreHandler = /** @type {TypedSignal<[Vector]>} */ (new Signal());
+        this.upPreHandler = /** @type {TypedSignal<[Vector, enumMouseButton]>} */ (new Signal());
         this.upPostHandler = /** @type {TypedSignal<[Vector]>} */ (new Signal());
 
         this.internalInitEvents();
@@ -489,7 +490,14 @@ export class Camera extends BasicSerializableObject {
             return;
         }
 
-        this.combinedSingleTouchStopHandler(event.clientX, event.clientY);
+        if (event.button === 0) {
+            this.combinedSingleTouchStopHandler(event.clientX, event.clientY);
+        } else if (event.button === 1) {
+            this.upPreHandler.dispatch(new Vector(event.clientX, event.clientY), enumMouseButton.middle);
+        } else if (event.button === 2) {
+            this.upPreHandler.dispatch(new Vector(event.clientX, event.clientY), enumMouseButton.right);
+        }
+
         return false;
     }
 
@@ -716,7 +724,12 @@ export class Camera extends BasicSerializableObject {
             this.userInteraction.dispatch(USER_INTERACT_TOUCHEND);
             this.didMoveSinceTouchStart = false;
         }
-        this.upPostHandler.dispatch(new Vector(x, y));
+        const pos = new Vector(x, y);
+        if (this.upPreHandler.dispatch(pos, enumMouseButton.left) === STOP_PROPAGATION) {
+            // Somebody else captured it
+            return;
+        }
+        this.upPostHandler.dispatch(pos);
     }
 
     /**
