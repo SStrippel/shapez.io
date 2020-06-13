@@ -2,6 +2,7 @@ import { Math_abs, Math_degrees, Math_radians } from "../../../core/builtins";
 import { globalConfig } from "../../../core/config";
 import { DrawParameters } from "../../../core/draw_parameters";
 import { drawRotatedSprite } from "../../../core/draw_utils";
+import { gMetaBuildingRegistry } from "../../../core/global_registries";
 import { Loader } from "../../../core/loader";
 import { STOP_PROPAGATION } from "../../../core/signal";
 import { TrackedState } from "../../../core/tracked_state";
@@ -20,6 +21,7 @@ import { BaseHUDPart } from "../base_hud_part";
 import { DynamicDomAttach } from "../dynamic_dom_attach";
 import { T } from "../../../translations";
 import { KEYMAPPINGS } from "../../key_action_mapper";
+import { MetaBeltBaseBuilding } from "../../buildings/belt_base";
 
 export class HUDBuildingPlacer extends BaseHUDPart {
     initialize() {
@@ -45,6 +47,7 @@ export class HUDBuildingPlacer extends BaseHUDPart {
 
         this.root.camera.downPreHandler.add(this.onMouseDown, this);
         this.root.camera.movePreHandler.add(this.onMouseMove, this);
+        this.root.camera.upPreHandler.add(this.onMouseUp, this);
         this.root.camera.upPostHandler.add(this.abortDragging, this);
 
         this.currentlyDragging = false;
@@ -56,6 +59,11 @@ export class HUDBuildingPlacer extends BaseHUDPart {
          * Whether we are currently drag-deleting
          */
         this.currentlyDeleting = false;
+
+        /**
+         * Whether the belt-dragging direction lock is active
+         */
+        this.currentlyDirectionLocked = false;
 
         /**
          * Stores which variants for each building we prefer, this is based on what
@@ -115,14 +123,13 @@ export class HUDBuildingPlacer extends BaseHUDPart {
             return;
         }
 
+        const metaBuilding = this.currentMetaBuilding.get();
         // Placement
         if (button === enumMouseButton.left && this.currentMetaBuilding.get()) {
             this.currentlyDragging = true;
             this.currentlyDeleting = false;
+            this.initialDragTile = this.root.camera.screenToWorld(pos).toTileSpace();
             this.lastDragTile = this.root.camera.screenToWorld(pos).toTileSpace();
-
-            // Place initial building
-            this.tryPlaceCurrentBuildingAt(this.lastDragTile);
 
             return STOP_PROPAGATION;
         }
@@ -158,6 +165,7 @@ export class HUDBuildingPlacer extends BaseHUDPart {
             }
 
             if (!oldPos.equals(newPos)) {
+                // Automatic directional rotation
                 if (
                     metaBuilding &&
                     metaBuilding.getRotateAutomaticallyWhilePlacing(this.currentVariant.get()) &&
@@ -178,38 +186,21 @@ export class HUDBuildingPlacer extends BaseHUDPart {
                         this.currentBaseRotation = (180 + this.currentBaseRotation) % 360;
                     }
                 }
+                const vectors = this.calculateVectors(oldPos, newPos);
 
-                // - Using bresenhams algorithmus
-
-                let x0 = oldPos.x;
-                let y0 = oldPos.y;
-                let x1 = newPos.x;
-                let y1 = newPos.y;
-
-                var dx = Math_abs(x1 - x0);
-                var dy = Math_abs(y1 - y0);
-                var sx = x0 < x1 ? 1 : -1;
-                var sy = y0 < y1 ? 1 : -1;
-                var err = dx - dy;
-
-                while (this.currentlyDeleting || this.currentMetaBuilding.get()) {
+                for (let i = 0; i < vectors.length; i++) {
+                    if (!this.currentMetaBuilding.get()) break;
+                    let { x, y } = vectors[i];
                     if (this.currentlyDeleting) {
-                        const contents = this.root.map.getTileContentXY(x0, y0);
+                        const contents = this.root.map.getTileContentXY(x, y);
                         if (contents && !contents.queuedForDestroy && !contents.destroyed) {
                             this.root.logic.tryDeleteBuilding(contents);
                         }
                     } else {
-                        this.tryPlaceCurrentBuildingAt(new Vector(x0, y0));
-                    }
-                    if (x0 === x1 && y0 === y1) break;
-                    var e2 = 2 * err;
-                    if (e2 > -dy) {
-                        err -= dy;
-                        x0 += sx;
-                    }
-                    if (e2 < dx) {
-                        err += dx;
-                        y0 += sy;
+                        const beltId = gMetaBuildingRegistry.findByClass(MetaBeltBaseBuilding).getId();
+                        if (this.currentMetaBuilding.get().getId() != beltId) {
+                            this.tryPlaceCurrentBuildingAt(new Vector(x, y));
+                        }
                     }
                 }
             }
@@ -217,6 +208,33 @@ export class HUDBuildingPlacer extends BaseHUDPart {
             this.lastDragTile = newPos;
 
             return STOP_PROPAGATION;
+        }
+    }
+
+    /**
+     * mouse down pre handler
+     * @param {Vector} pos
+     * @param {enumMouseButton} button
+     */
+    onMouseUp(pos, button) {
+        if (this.root.camera.getIsMapOverlayActive()) {
+            return;
+        }
+        if (button === enumMouseButton.left && this.currentMetaBuilding.get()) {
+            const currentMetaBuilding = this.currentMetaBuilding.get();
+            const beltId = gMetaBuildingRegistry.findByClass(MetaBeltBaseBuilding).getId();
+            if (currentMetaBuilding.getId() == beltId) {
+                const vectors = this.calculateVectors(
+                    this.initialDragTile,
+                    this.calculatePerpendicularIntersectionVector(this.initialDragTile, this.lastDragTile)
+                );
+                for (let i = 0; i < vectors.length; i++) {
+                    this.tryPlaceCurrentBuildingAt(vectors[i]);
+                }
+            } else {
+                // Place initial building
+                this.tryPlaceCurrentBuildingAt(this.lastDragTile);
+            }
         }
     }
 
@@ -232,9 +250,10 @@ export class HUDBuildingPlacer extends BaseHUDPart {
      * aborts any dragging op
      */
     abortDragging() {
-        this.currentlyDragging = true;
+        this.currentlyDragging = false;
         this.currentlyDeleting = false;
         this.lastDragTile = null;
+        this.initialDragTile = null;
     }
 
     /**
@@ -628,6 +647,12 @@ export class HUDBuildingPlacer extends BaseHUDPart {
         staticComp.drawSpriteOnFullEntityBounds(parameters, previewSprite);
         staticComp.origin = tile;
 
+        // Draw belt drag preview
+        const beltId = gMetaBuildingRegistry.findByClass(MetaBeltBaseBuilding).getId();
+        if (this.currentlyDragging && metaBuilding.getId() == beltId) {
+            this.drawBeltPlacementPreview(parameters);
+        }
+
         // Draw ejectors
         if (canBuild) {
             this.drawMatchingAcceptorsAndEjectors(parameters);
@@ -740,6 +765,124 @@ export class HUDBuildingPlacer extends BaseHUDPart {
                 });
                 parameters.context.globalAlpha = 1;
             }
+        }
+    }
+
+    /**
+     *
+     * @param {DrawParameters} parameters
+     */
+    drawBeltPlacementPreview(parameters) {
+        const metaBuilding = this.currentMetaBuilding.get();
+        if (metaBuilding.getId() != "belt") {
+            return;
+        }
+        const staticComp = this.fakeEntity.components.StaticMapEntity;
+        const previewSprite = metaBuilding.getBlueprintSprite(0, this.currentVariant.get());
+        const intersectionVector = this.calculatePerpendicularIntersectionVector(
+            this.initialDragTile,
+            this.lastDragTile
+        );
+        const previewVectors = this.calculateVectors(this.initialDragTile, intersectionVector);
+
+        // visualize pathfinding
+        if (G_IS_DEV && globalConfig.debug.showBeltDragPathFinding) {
+            const ctx = parameters.context;
+            const vectorStart = this.initialDragTile;
+            const vectorIntersect = intersectionVector;
+            const vectorEnd = this.lastDragTile;
+
+            ctx.beginPath();
+            ctx.moveTo(
+                vectorStart.x * globalConfig.tileSize + globalConfig.halfTileSize,
+                vectorStart.y * globalConfig.tileSize + globalConfig.halfTileSize
+            );
+            ctx.lineTo(
+                vectorIntersect.x * globalConfig.tileSize + globalConfig.halfTileSize,
+                vectorIntersect.y * globalConfig.tileSize + globalConfig.halfTileSize
+            );
+            ctx.lineTo(
+                vectorEnd.x * globalConfig.tileSize + globalConfig.halfTileSize,
+                vectorEnd.y * globalConfig.tileSize + globalConfig.halfTileSize
+            );
+            ctx.strokeStyle = "rgba(255, 0, 0, 1)";
+            ctx.stroke();
+        }
+
+        // visualize direction lock zone
+        if (G_IS_DEV && globalConfig.debug.showBeltDragDirectionLockZone) {
+            const ctx = parameters.context;
+            const vectorStart = this.initialDragTile;
+            const offsetHeightInTiles = 1;
+            const offsetWidthInTiles = 1;
+            const heightInTiles = 3;
+            const widthInTiles = 3;
+
+            ctx.strokeStyle = "rgba(255, 0, 0, 1)";
+            ctx.strokeRect(
+                vectorStart.x * globalConfig.tileSize - offsetWidthInTiles * globalConfig.tileSize,
+                vectorStart.y * globalConfig.tileSize - offsetHeightInTiles * globalConfig.tileSize,
+                widthInTiles * globalConfig.tileSize,
+                heightInTiles * globalConfig.tileSize
+            );
+        }
+
+        for (let i = 0; i < previewVectors.length; i++) {
+            staticComp.origin = previewVectors[i];
+            staticComp.drawSpriteOnFullEntityBounds(parameters, previewSprite);
+        }
+    }
+
+    /**
+     * This method returns all vectors between two vectors based on bresenham's algorithm
+     * @param {Vector} start
+     * @param {Vector} end
+     * @returns {Array<Vector>}
+     */
+    calculateVectors(start, end) {
+        const vectors = [];
+
+        // bresenham's algorithm to get all vectors
+        let [x0, y0, x1, y1] = [start.x, start.y, end.x, end.y];
+
+        let dx = Math.abs(x1 - x0);
+        let dy = Math.abs(y1 - y0);
+        let sx = x0 < x1 ? 1 : -1;
+        let sy = y0 < y1 ? 1 : -1;
+        let err = dx - dy;
+
+        while (true) {
+            vectors.push(new Vector(x0, y0));
+
+            if (x0 === x1 && y0 === y1) break;
+            let e2 = 2 * err;
+            if (e2 > -dy) {
+                err -= dy;
+                x0 += sx;
+            }
+            if (e2 < dx) {
+                err += dx;
+                y0 += sy;
+            }
+        }
+
+        return vectors;
+    }
+
+    /**
+     * This method calculates and returns the perpendicular intersection vector of two given vectors.
+     * @param {Vector} start
+     * @param {Vector} end
+     * @returns {Vector}
+     */
+    calculatePerpendicularIntersectionVector(start, end) {
+        const direction = start.direction(end);
+        const directionAbs = direction.abs();
+
+        if (directionAbs.x < directionAbs.y) {
+            return new Vector(start.x, start.y + direction.y);
+        } else {
+            return new Vector(start.x + direction.x, start.y);
         }
     }
 }

@@ -91,6 +91,8 @@ export const globalConfig = {
         // doNotRenderStatics: true,
         // disableZoomLimits: true,
         // showChunkBorders: true,
+        // showBeltDragPathFinding: true,
+        // showBeltDragDirectionLockZone: true,
         // rewardsInstant: true,
         allBuildingsUnlocked: true,
         blueprintsNoCost: true,
