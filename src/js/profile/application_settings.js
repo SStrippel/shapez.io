@@ -148,6 +148,7 @@ export const allApplicationSettings = [
     }),
 
     new BoolSetting("alwaysMultiplace", categoryGame, (app, value) => {}),
+    new BoolSetting("beltDragging", categoryGame, (app, value) => {}),
     new BoolSetting("offerHints", categoryGame, (app, value) => {}),
 ];
 
@@ -167,6 +168,7 @@ class SettingsStorage {
         this.scrollWheelSensitivity = "regular";
 
         this.alwaysMultiplace = false;
+        this.beltDragging = false;
         this.offerHints = true;
 
         /**
