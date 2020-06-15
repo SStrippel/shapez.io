@@ -490,15 +490,27 @@ export class Camera extends BasicSerializableObject {
             return;
         }
 
+        let result;
         if (event.button === 0) {
-            this.combinedSingleTouchStopHandler(event.clientX, event.clientY);
+            result = this.combinedSingleTouchStopHandler(event.clientX, event.clientY);
         } else if (event.button === 1) {
-            this.upPreHandler.dispatch(new Vector(event.clientX, event.clientY), enumMouseButton.middle);
+            result = this.upPreHandler.dispatch(
+                new Vector(event.clientX, event.clientY),
+                enumMouseButton.middle
+            );
         } else if (event.button === 2) {
-            this.upPreHandler.dispatch(new Vector(event.clientX, event.clientY), enumMouseButton.right);
+            result = this.upPreHandler.dispatch(
+                new Vector(event.clientX, event.clientY),
+                enumMouseButton.right
+            );
         }
 
-        return false;
+        if (result == STOP_PROPAGATION) {
+            // Somebody else captured it
+            return;
+        }
+
+        this.upPostHandler.dispatch(new Vector(event.clientX, event.clientY));
     }
 
     /**
@@ -725,11 +737,8 @@ export class Camera extends BasicSerializableObject {
             this.didMoveSinceTouchStart = false;
         }
         const pos = new Vector(x, y);
-        if (this.upPreHandler.dispatch(pos, enumMouseButton.left) === STOP_PROPAGATION) {
-            // Somebody else captured it
-            return;
-        }
-        this.upPostHandler.dispatch(pos);
+
+        return this.upPreHandler.dispatch(pos, enumMouseButton.left);
     }
 
     /**
