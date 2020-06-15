@@ -61,11 +61,6 @@ export class HUDBuildingPlacer extends BaseHUDPart {
         this.currentlyDeleting = false;
 
         /**
-         * Whether the belt-dragging direction lock is active
-         */
-        this.currentlyDirectionLocked = false;
-
-        /**
          * Stores which variants for each building we prefer, this is based on what
          * the user last selected
          */
@@ -82,6 +77,12 @@ export class HUDBuildingPlacer extends BaseHUDPart {
          * @type {Vector}
          */
         this.initialDragTile = null;
+
+        /**
+         * The perpendicular intersection tile between the initialDragTile and the lastDragTile
+         * @type {Vector}
+         */
+        this.DragPerpendicularIntersectionTile = null;
 
         this.root.signals.storyGoalCompleted.add(this.rerenderVariants, this);
         this.root.signals.upgradePurchased.add(this.rerenderVariants, this);
@@ -130,6 +131,13 @@ export class HUDBuildingPlacer extends BaseHUDPart {
             this.currentlyDeleting = false;
             this.initialDragTile = this.root.camera.screenToWorld(pos).toTileSpace();
             this.lastDragTile = this.root.camera.screenToWorld(pos).toTileSpace();
+            this.DragPerpendicularIntersectionTile = this.root.camera.screenToWorld(pos).toTileSpace();
+
+            const beltId = gMetaBuildingRegistry.findByClass(MetaBeltBaseBuilding).getId();
+            if (!this.root.app.settings.getAllSettings().beltDragging || metaBuilding.getId() != beltId) {
+                // Place initial building
+                this.tryPlaceCurrentBuildingAt(this.lastDragTile);
+            }
 
             return STOP_PROPAGATION;
         }
@@ -165,6 +173,21 @@ export class HUDBuildingPlacer extends BaseHUDPart {
             }
 
             if (!oldPos.equals(newPos)) {
+                const isBeltDragActive = this.root.app.settings.getAllSettings().beltDragging;
+                const beltId = gMetaBuildingRegistry.findByClass(MetaBeltBaseBuilding).getId();
+
+                if (
+                    metaBuilding &&
+                    isBeltDragActive &&
+                    this.currentlyDragging &&
+                    metaBuilding.getId() == beltId
+                ) {
+                    this.DragPerpendicularIntersectionTile = this.calculatePerpendicularIntersectionVector(
+                        this.initialDragTile,
+                        newPos
+                    );
+                }
+
                 // Automatic directional rotation
                 if (
                     metaBuilding &&
@@ -173,7 +196,12 @@ export class HUDBuildingPlacer extends BaseHUDPart {
                         .getBinding(KEYMAPPINGS.placementModifiers.placementDisableAutoOrientation)
                         .isCurrentlyPressed()
                 ) {
-                    const delta = newPos.sub(oldPos);
+                    // We use a different automatic directional rotation for belt dragging
+                    const delta =
+                        isBeltDragActive && metaBuilding.getId() == beltId && this.currentlyDragging
+                            ? this.DragPerpendicularIntersectionTile.sub(this.initialDragTile)
+                            : newPos.sub(oldPos);
+
                     const angleDeg = Math_degrees(delta.angle());
                     this.currentBaseRotation = (Math.round(angleDeg / 90) * 90 + 360) % 360;
 
@@ -189,7 +217,6 @@ export class HUDBuildingPlacer extends BaseHUDPart {
                 const vectors = this.calculateVectors(oldPos, newPos);
 
                 for (let i = 0; i < vectors.length; i++) {
-                    if (!this.currentMetaBuilding.get()) break;
                     let { x, y } = vectors[i];
                     if (this.currentlyDeleting) {
                         const contents = this.root.map.getTileContentXY(x, y);
@@ -197,8 +224,7 @@ export class HUDBuildingPlacer extends BaseHUDPart {
                             this.root.logic.tryDeleteBuilding(contents);
                         }
                     } else {
-                        const beltId = gMetaBuildingRegistry.findByClass(MetaBeltBaseBuilding).getId();
-                        if (this.currentMetaBuilding.get().getId() != beltId) {
+                        if (!isBeltDragActive || metaBuilding.getId() != beltId) {
                             this.tryPlaceCurrentBuildingAt(new Vector(x, y));
                         }
                     }
@@ -212,7 +238,7 @@ export class HUDBuildingPlacer extends BaseHUDPart {
     }
 
     /**
-     * mouse down pre handler
+     * mouse up pre handler
      * @param {Vector} pos
      * @param {enumMouseButton} button
      */
@@ -223,17 +249,17 @@ export class HUDBuildingPlacer extends BaseHUDPart {
         if (button === enumMouseButton.left && this.currentMetaBuilding.get()) {
             const currentMetaBuilding = this.currentMetaBuilding.get();
             const beltId = gMetaBuildingRegistry.findByClass(MetaBeltBaseBuilding).getId();
-            if (currentMetaBuilding.getId() == beltId) {
+            if (
+                this.root.app.settings.getAllSettings().beltDragging &&
+                currentMetaBuilding.getId() == beltId
+            ) {
                 const vectors = this.calculateVectors(
                     this.initialDragTile,
-                    this.calculatePerpendicularIntersectionVector(this.initialDragTile, this.lastDragTile)
+                    this.DragPerpendicularIntersectionTile
                 );
                 for (let i = 0; i < vectors.length; i++) {
                     this.tryPlaceCurrentBuildingAt(vectors[i]);
                 }
-            } else {
-                // Place initial building
-                this.tryPlaceCurrentBuildingAt(this.lastDragTile);
             }
         }
     }
@@ -254,6 +280,7 @@ export class HUDBuildingPlacer extends BaseHUDPart {
         this.currentlyDeleting = false;
         this.lastDragTile = null;
         this.initialDragTile = null;
+        this.DragPerpendicularIntersectionTile = null;
     }
 
     /**
@@ -606,7 +633,7 @@ export class HUDBuildingPlacer extends BaseHUDPart {
         staticComp.tileSize = metaBuilding.getDimensions(this.currentVariant.get());
         metaBuilding.updateVariants(this.fakeEntity, rotationVariant, this.currentVariant.get());
 
-        // Check if we could place the buildnig
+        // Check if we could place the building
         const canBuild = this.root.logic.checkCanPlaceBuilding({
             origin: tile,
             rotation,
@@ -648,8 +675,11 @@ export class HUDBuildingPlacer extends BaseHUDPart {
         staticComp.origin = tile;
 
         // Draw belt drag preview
-        const beltId = gMetaBuildingRegistry.findByClass(MetaBeltBaseBuilding).getId();
-        if (this.currentlyDragging && metaBuilding.getId() == beltId) {
+        if (
+            this.root.app.settings.getAllSettings().beltDragging &&
+            this.currentlyDragging &&
+            metaBuilding.getId() == gMetaBuildingRegistry.findByClass(MetaBeltBaseBuilding).getId()
+        ) {
             this.drawBeltPlacementPreview(parameters);
         }
 
@@ -774,62 +804,51 @@ export class HUDBuildingPlacer extends BaseHUDPart {
      */
     drawBeltPlacementPreview(parameters) {
         const metaBuilding = this.currentMetaBuilding.get();
-        if (metaBuilding.getId() != "belt") {
+        const beltId = gMetaBuildingRegistry.findByClass(MetaBeltBaseBuilding).getId();
+        if (metaBuilding.getId() != beltId) {
             return;
         }
         const staticComp = this.fakeEntity.components.StaticMapEntity;
-        const previewSprite = metaBuilding.getBlueprintSprite(0, this.currentVariant.get());
-        const intersectionVector = this.calculatePerpendicularIntersectionVector(
+        const previewVectors = this.calculateVectors(
             this.initialDragTile,
-            this.lastDragTile
+            this.DragPerpendicularIntersectionTile
         );
-        const previewVectors = this.calculateVectors(this.initialDragTile, intersectionVector);
+
+        for (let i = 0; i < previewVectors.length; i++) {
+            const tile = previewVectors[i];
+            // TEMP
+            // Compute best rotation variant
+
+            const temp = metaBuilding.computeOptimalDirectionAndRotationVariantAtTile(
+                this.root,
+                tile,
+                this.currentBaseRotation,
+                this.currentVariant.get()
+            );
+
+            const rotation = temp.rotation;
+            const rotationVariant = i == previewVectors.length - 1 ? temp.rotationVariant : 0;
+
+            // Synchronize rotation and origin
+            const previewSprite = metaBuilding.getBlueprintSprite(rotationVariant, this.currentVariant.get());
+            staticComp.origin = tile;
+            staticComp.rotation = rotation;
+            staticComp.drawSpriteOnFullEntityBounds(parameters, previewSprite);
+        }
 
         // visualize pathfinding
         if (G_IS_DEV && globalConfig.debug.showBeltDragPathFinding) {
             const ctx = parameters.context;
-            const vectorStart = this.initialDragTile;
-            const vectorIntersect = intersectionVector;
-            const vectorEnd = this.lastDragTile;
+            const vectorStart = this.initialDragTile.toWorldSpaceCenterOfTile();
+            const vectorIntersect = this.DragPerpendicularIntersectionTile.toWorldSpaceCenterOfTile();
+            const vectorEnd = this.lastDragTile.toWorldSpaceCenterOfTile();
 
             ctx.beginPath();
-            ctx.moveTo(
-                vectorStart.x * globalConfig.tileSize + globalConfig.halfTileSize,
-                vectorStart.y * globalConfig.tileSize + globalConfig.halfTileSize
-            );
-            ctx.lineTo(
-                vectorIntersect.x * globalConfig.tileSize + globalConfig.halfTileSize,
-                vectorIntersect.y * globalConfig.tileSize + globalConfig.halfTileSize
-            );
-            ctx.lineTo(
-                vectorEnd.x * globalConfig.tileSize + globalConfig.halfTileSize,
-                vectorEnd.y * globalConfig.tileSize + globalConfig.halfTileSize
-            );
+            ctx.moveTo(vectorStart.x, vectorStart.y);
+            ctx.lineTo(vectorIntersect.x, vectorIntersect.y);
+            ctx.lineTo(vectorEnd.x, vectorEnd.y);
             ctx.strokeStyle = "rgba(255, 0, 0, 1)";
             ctx.stroke();
-        }
-
-        // visualize direction lock zone
-        if (G_IS_DEV && globalConfig.debug.showBeltDragDirectionLockZone) {
-            const ctx = parameters.context;
-            const vectorStart = this.initialDragTile;
-            const offsetHeightInTiles = 1;
-            const offsetWidthInTiles = 1;
-            const heightInTiles = 3;
-            const widthInTiles = 3;
-
-            ctx.strokeStyle = "rgba(255, 0, 0, 1)";
-            ctx.strokeRect(
-                vectorStart.x * globalConfig.tileSize - offsetWidthInTiles * globalConfig.tileSize,
-                vectorStart.y * globalConfig.tileSize - offsetHeightInTiles * globalConfig.tileSize,
-                widthInTiles * globalConfig.tileSize,
-                heightInTiles * globalConfig.tileSize
-            );
-        }
-
-        for (let i = 0; i < previewVectors.length; i++) {
-            staticComp.origin = previewVectors[i];
-            staticComp.drawSpriteOnFullEntityBounds(parameters, previewSprite);
         }
     }
 
@@ -840,6 +859,11 @@ export class HUDBuildingPlacer extends BaseHUDPart {
      * @returns {Array<Vector>}
      */
     calculateVectors(start, end) {
+        // early return to avoid crashes if start or end is null - e.g. if your mouse leaves the window while belt-dragging
+        if (!start || !end) {
+            return [];
+        }
+
         const vectors = [];
 
         // bresenham's algorithm to get all vectors
